@@ -3,59 +3,55 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+
+	"github.com/gorilla/mux"
 )
 
+// ColorSets represents the structure of the input JSON file
+type ColorSets struct {
+	Light map[string]string `json:"light"`
+	Dark  map[string]string `json:"dark"`
+}
+
+// ContrastResult holds the contrast ratio and WCAG levels for a color pair
 type ContrastResult struct {
-	Fg            string  `json:"fg"`
-	Bg            string  `json:"bg"`
-	ContrastRatio float64 `json:"contrastRatio"`
-	LevelSmall    string  `json:"levelSmall"`
-	LevelLarge    string  `json:"levelLarge"`
+	Foreground     string  `json:"foreground"`
+	Background     string  `json:"background"`
+	ContrastRatio  float64 `json:"contrastRatio"`
+	LevelSmallText string  `json:"levelSmallText"`
+	LevelLargeText string  `json:"levelLargeText"`
+	RequiresFix    bool    `json:"requiresFix"`
 }
 
-var lightColors = map[string]string{
-	"black":   "#333333",
-	"silver":  "#777777",
-	"gray":    "#555555",
-	"white":   "#eeeeee",
-	"maroon":  "#800000",
-	"red":     "#b30000",
-	"purple":  "#800080",
-	"fuchsia": "#b300b3",
-	"green":   "#008000",
-	"lime":    "#2d7f2d",
-	"olive":   "#666600",
-	"yellow":  "#999900",
-	"navy":    "#000080",
-	"blue":    "#0000b3",
-	"teal":    "#006666",
-	"aqua":    "#009999",
+// WCAGLevels categorizes the contrast ratio
+type WCAGLevels struct {
+	AAA []ContrastResult `json:"AAA"`
+	AA  []ContrastResult `json:"AA"`
+	Fail []ContrastResult `json:"Fail"`
 }
 
-var darkColors = map[string]string{
-	"black":   "#121212",
-	"silver":  "#c0c0c0",
-	"gray":    "#aaaaaa",
-	"white":   "#f0f0f0",
-	"maroon":  "#ff4d4d",
-	"red":     "#ff3333",
-	"purple":  "#cc66cc",
-	"fuchsia": "#ff66ff",
-	"green":   "#33cc33",
-	"lime":    "#66ff66",
-	"olive":   "#cccc33",
-	"yellow":  "#ffff33",
-	"navy":    "#6666ff",
-	"blue":    "#4d4dff",
-	"teal":    "#33cccc",
-	"aqua":    "#66ffff",
+// LoadColors reads and parses the colors from a JSON file
+func LoadColors(filename string) (*ColorSets, error) {
+	data, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	var colors ColorSets
+	err = json.Unmarshal(data, &colors)
+	if err != nil {
+		return nil, err
+	}
+	return &colors, nil
 }
 
+// toLinear converts sRGB values to linear RGB
 func toLinear(value float64) float64 {
 	if value <= 0.03928 {
 		return value / 12.92
@@ -63,31 +59,38 @@ func toLinear(value float64) float64 {
 	return math.Pow((value+0.055)/1.055, 2.4)
 }
 
+// relativeLuminance calculates the relative luminance of a color
 func relativeLuminance(hex string) (float64, error) {
 	hex = strings.TrimPrefix(hex, "#")
 	if len(hex) != 6 {
 		return 0, fmt.Errorf("invalid hex: %s", hex)
 	}
-	rVal, err := strconv.ParseInt(hex[0:2], 16, 64)
+	r, err := parseHex(hex[0:2])
 	if err != nil {
 		return 0, err
 	}
-	gVal, err := strconv.ParseInt(hex[2:4], 16, 64)
+	g, err := parseHex(hex[2:4])
 	if err != nil {
 		return 0, err
 	}
-	bVal, err := strconv.ParseInt(hex[4:6], 16, 64)
+	b, err := parseHex(hex[4:6])
 	if err != nil {
 		return 0, err
 	}
 
-	R := toLinear(float64(rVal) / 255.0)
-	G := toLinear(float64(gVal) / 255.0)
-	B := toLinear(float64(bVal) / 255.0)
+	R := toLinear(float64(r) / 255.0)
+	G := toLinear(float64(g) / 255.0)
+	B := toLinear(float64(b) / 255.0)
 
 	return 0.2126*R + 0.7152*G + 0.0722*B, nil
 }
 
+// parseHex converts a 2-character hex string to an integer
+func parseHex(h string) (int64, error) {
+	return strconvParseInt(h, 16)
+}
+
+// contrastRatio calculates the contrast ratio between two colors
 func contrastRatio(fgHex, bgHex string) (float64, error) {
 	fgLum, err := relativeLuminance(fgHex)
 	if err != nil {
@@ -97,14 +100,12 @@ func contrastRatio(fgHex, bgHex string) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
-	L1 := fgLum
-	L2 := bgLum
-	if L2 > L1 {
-		L1, L2 = L2, L1
-	}
+	L1 := math.Max(fgLum, bgLum)
+	L2 := math.Min(fgLum, bgLum)
 	return (L1 + 0.05) / (L2 + 0.05), nil
 }
 
+// complianceLevel determines the WCAG level for small text
 func complianceLevel(ratio float64) string {
 	if ratio >= 7 {
 		return "AAA"
@@ -115,6 +116,7 @@ func complianceLevel(ratio float64) string {
 	}
 }
 
+// complianceLevelLarge determines the WCAG level for large text
 func complianceLevelLarge(ratio float64) string {
 	if ratio >= 4.5 {
 		return "AAA"
@@ -125,25 +127,55 @@ func complianceLevelLarge(ratio float64) string {
 	}
 }
 
+// allContrastsHandler handles the /all-contrasts endpoint
 func allContrastsHandler(w http.ResponseWriter, r *http.Request) {
-	results := []ContrastResult{}
+	// Load colors from JSON file
+	colors, err := LoadColors("colors.json")
+	if err != nil {
+		http.Error(w, "Failed to load colors: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
-	for _, fgHex := range lightColors {
-		for _, bgHex := range darkColors {
+	results := WCAGLevels{
+		AAA: []ContrastResult{},
+		AA:  []ContrastResult{},
+		Fail: []ContrastResult{},
+	}
+
+	// Iterate through all light and dark color combinations
+	for nameLight, fgHex := range colors.Light {
+		for nameDark, bgHex := range colors.Dark {
 			ratio, err := contrastRatio(fgHex, bgHex)
 			if err != nil {
+				log.Printf("Error calculating contrast for %s on %s: %v", fgHex, bgHex, err)
 				continue
 			}
+
 			levelSmall := complianceLevel(ratio)
 			levelLarge := complianceLevelLarge(ratio)
-			res := ContrastResult{
-				Fg:            fgHex,
-				Bg:            bgHex,
-				ContrastRatio: math.Round(ratio*100) / 100,
-				LevelSmall:    levelSmall,
-				LevelLarge:    levelLarge,
+
+			requiresFix := false
+			if levelSmall == "Fail" || levelLarge == "Fail" {
+				requiresFix = true
 			}
-			results = append(results, res)
+
+			result := ContrastResult{
+				Foreground:     fmt.Sprintf("%s (%s)", fgHex, nameLight),
+				Background:     fmt.Sprintf("%s (%s)", bgHex, nameDark),
+				ContrastRatio:  math.Round(ratio*100) / 100, // Round to 2 decimal places
+				LevelSmallText: levelSmall,
+				LevelLargeText: levelLarge,
+				RequiresFix:    requiresFix,
+			}
+
+			switch levelSmall {
+			case "AAA":
+				results.AAA = append(results.AAA, result)
+			case "AA":
+				results.AA = append(results.AA, result)
+			default:
+				results.Fail = append(results.Fail, result)
+			}
 		}
 	}
 
@@ -151,8 +183,20 @@ func allContrastsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(results)
 }
 
+// strconvParseInt is a helper function to parse hex strings
+func strconvParseInt(s string, base int) (int64, error) {
+	return strconv.ParseInt(s, base, 64)
+}
+
 func main() {
-	http.HandleFunc("/all-contrasts", allContrastsHandler)
-	fmt.Println("サーバーがポート8080で起動しています...")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	// Check if colors.json exists
+	if _, err := os.Stat("colors.json"); os.IsNotExist(err) {
+		log.Fatal("colors.json file not found. Please ensure it exists in the current directory.")
+	}
+
+	r := mux.NewRouter()
+	r.HandleFunc("/all-contrasts", allContrastsHandler).Methods("GET")
+
+	fmt.Println("Server is running on port 8080...")
+	log.Fatal(http.ListenAndServe(":8080", r))
 }

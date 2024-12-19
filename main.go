@@ -3,15 +3,15 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"io/ioutil"
 	"log"
 	"math"
 	"net/http"
-	"os"
+	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
-
-	"github.com/gorilla/mux"
 )
 
 // ColorSets represents the structure of the input JSON file
@@ -22,8 +22,10 @@ type ColorSets struct {
 
 // ContrastResult holds the contrast ratio and WCAG levels for a color pair
 type ContrastResult struct {
-	Foreground     string  `json:"foreground"`
-	Background     string  `json:"background"`
+	ForegroundHex  string  `json:"foregroundHex"`
+	ForegroundName string  `json:"foregroundName"`
+	BackgroundHex  string  `json:"backgroundHex"`
+	BackgroundName string  `json:"backgroundName"`
 	ContrastRatio  float64 `json:"contrastRatio"`
 	LevelSmallText string  `json:"levelSmallText"`
 	LevelLargeText string  `json:"levelLargeText"`
@@ -87,7 +89,7 @@ func relativeLuminance(hex string) (float64, error) {
 
 // parseHex converts a 2-character hex string to an integer
 func parseHex(h string) (int64, error) {
-	return strconvParseInt(h, 16)
+	return strconv.ParseInt(h, 16, 64)
 }
 
 // contrastRatio calculates the contrast ratio between two colors
@@ -127,7 +129,7 @@ func complianceLevelLarge(ratio float64) string {
 	}
 }
 
-// allContrastsHandler handles the /all-contrasts endpoint
+// allContrastsHandler handles the root endpoint and renders the HTML page
 func allContrastsHandler(w http.ResponseWriter, r *http.Request) {
 	// Load colors from JSON file
 	colors, err := LoadColors("colors.json")
@@ -160,8 +162,10 @@ func allContrastsHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			result := ContrastResult{
-				Foreground:     fmt.Sprintf("%s (%s)", fgHex, nameLight),
-				Background:     fmt.Sprintf("%s (%s)", bgHex, nameDark),
+				ForegroundHex:  fgHex,
+				ForegroundName: nameLight,
+				BackgroundHex:  bgHex,
+				BackgroundName: nameDark,
 				ContrastRatio:  math.Round(ratio*100) / 100, // Round to 2 decimal places
 				LevelSmallText: levelSmall,
 				LevelLargeText: levelLarge,
@@ -179,24 +183,207 @@ func allContrastsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(results)
+	// Parse and execute the HTML template
+	tmpl, err := template.New("results").Parse(htmlTemplate)
+	if err != nil {
+		http.Error(w, "Failed to parse template: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	data := struct {
+		AAA  []ContrastResult
+		AA   []ContrastResult
+		Fail []ContrastResult
+	}{
+		AAA:  results.AAA,
+		AA:   results.AA,
+		Fail: results.Fail,
+	}
+
+	w.Header().Set("Content-Type", "text/html")
+	err = tmpl.Execute(w, data)
+	if err != nil {
+		http.Error(w, "Failed to execute template: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 }
 
-// strconvParseInt is a helper function to parse hex strings
-func strconvParseInt(s string, base int) (int64, error) {
-	return strconv.ParseInt(s, base, 64)
-}
+const htmlTemplate = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Contrast Checker Results</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+        }
+        h1, h2 {
+            color: #444;
+        }
+        .container {
+            max-width: 1200px;
+            margin: auto;
+        }
+        .category {
+            margin-bottom: 40px;
+        }
+        .color-pair {
+            display: flex;
+            align-items: center;
+            background-color: #fff;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .color-box {
+            width: 60px;
+            height: 60px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            margin-right: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            font-weight: bold;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+        }
+        .contrast-info {
+            flex-grow: 1;
+        }
+        .fail {
+            border-left: 5px solid #e74c3c;
+            background-color: #fdecea;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Contrast Checker Results</h1>
+
+        {{if .AAA}}
+        <div class="category">
+            <h2>AAA Compliance</h2>
+            {{range .AAA}}
+            <div class="color-pair">
+                <div class="color-box" style="background-color: {{.ForegroundHex}};">
+                    FG
+                </div>
+                <div class="color-box" style="background-color: {{.BackgroundHex}};">
+                    BG
+                </div>
+                <div class="contrast-info">
+                    <p><strong>Foreground:</strong> {{.ForegroundName}} ({{.ForegroundHex}})</p>
+                    <p><strong>Background:</strong> {{.BackgroundName}} ({{.BackgroundHex}})</p>
+                    <p><strong>Contrast Ratio:</strong> {{.ContrastRatio}}</p>
+                    <p><strong>WCAG Level (Small Text):</strong> {{.LevelSmallText}}</p>
+                    <p><strong>WCAG Level (Large Text):</strong> {{.LevelLargeText}}</p>
+                </div>
+            </div>
+            {{end}}
+        </div>
+        {{end}}
+
+        {{if .AA}}
+        <div class="category">
+            <h2>AA Compliance</h2>
+            {{range .AA}}
+            <div class="color-pair">
+                <div class="color-box" style="background-color: {{.ForegroundHex}};">
+                    FG
+                </div>
+                <div class="color-box" style="background-color: {{.BackgroundHex}};">
+                    BG
+                </div>
+                <div class="contrast-info">
+                    <p><strong>Foreground:</strong> {{.ForegroundName}} ({{.ForegroundHex}})</p>
+                    <p><strong>Background:</strong> {{.BackgroundName}} ({{.BackgroundHex}})</p>
+                    <p><strong>Contrast Ratio:</strong> {{.ContrastRatio}}</p>
+                    <p><strong>WCAG Level (Small Text):</strong> {{.LevelSmallText}}</p>
+                    <p><strong>WCAG Level (Large Text):</strong> {{.LevelLargeText}}</p>
+                </div>
+            </div>
+            {{end}}
+        </div>
+        {{end}}
+
+        {{if .Fail}}
+        <div class="category">
+            <h2>Fail Compliance</h2>
+            {{range .Fail}}
+            <div class="color-pair fail">
+                <div class="color-box" style="background-color: {{.ForegroundHex}};">
+                    FG
+                </div>
+                <div class="color-box" style="background-color: {{.BackgroundHex}};">
+                    BG
+                </div>
+                <div class="contrast-info">
+                    <p><strong>Foreground:</strong> {{.ForegroundName}} ({{.ForegroundHex}})</p>
+                    <p><strong>Background:</strong> {{.BackgroundName}} ({{.BackgroundHex}})</p>
+                    <p><strong>Contrast Ratio:</strong> {{.ContrastRatio}}</p>
+                    <p><strong>WCAG Level (Small Text):</strong> {{.LevelSmallText}}</p>
+                    <p><strong>WCAG Level (Large Text):</strong> {{.LevelLargeText}}</p>
+                    <p><strong>Action Required:</strong> Fix the color combination.</p>
+                </div>
+            </div>
+            {{end}}
+        </div>
+        {{end}}
+    </div>
+</body>
+</html>
+`
 
 func main() {
 	// Check if colors.json exists
-	if _, err := os.Stat("colors.json"); os.IsNotExist(err) {
-		log.Fatal("colors.json file not found. Please ensure it exists in the current directory.")
+	if _, err := ioutil.ReadFile("colors.json"); err != nil {
+		log.Fatalf("colors.json file not found. Please ensure it exists in the current directory.")
 	}
 
-	r := mux.NewRouter()
-	r.HandleFunc("/all-contrasts", allContrastsHandler).Methods("GET")
+	// Handle root path
+	http.HandleFunc("/", allContrastsHandler)
 
-	fmt.Println("Server is running on port 8080...")
-	log.Fatal(http.ListenAndServe(":8080", r))
+	// Start the server in a separate goroutine
+	go func() {
+		fmt.Println("Server is running on http://localhost:8080/")
+		if err := http.ListenAndServe(":8080", nil); err != nil {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+	}()
+
+	// Automatically open the browser
+	openBrowser("http://localhost:8080/")
+
+	// Block main goroutine
+	select {}
+}
+
+// openBrowser attempts to open the default browser to the specified URL
+func openBrowser(url string) {
+	var cmd string
+	var args []string
+
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = "open"
+		args = []string{url}
+	case "windows":
+		cmd = "cmd"
+		args = []string{"/c", "start", url}
+	default: // "linux", "freebsd", "openbsd", "netbsd"
+		cmd = "xdg-open"
+		args = []string{url}
+	}
+
+	err := exec.Command(cmd, args...).Start()
+	if err != nil {
+		log.Printf("Failed to open browser: %v", err)
+	}
 }

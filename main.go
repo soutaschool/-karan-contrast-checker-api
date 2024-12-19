@@ -364,7 +364,7 @@ func writeResultsToCSV(writer *csv.Writer, results []ContrastResult) {
 
 func main() {
 	if _, err := ioutil.ReadFile("colors.json"); err != nil {
-		log.Fatalf("colors.jsonファイルが見つかりません。現在のディレクトリに存在することを確認してください。")
+		log.Fatalf("colors.json file not found. Please ensure it exists in the current directory.")
 	}
 
 	http.HandleFunc("/", allContrastsHandler)
@@ -372,9 +372,9 @@ func main() {
 	http.Handle("/templates/", http.StripPrefix("/templates/", http.FileServer(http.Dir("templates"))))
 
 	go func() {
-		fmt.Println("サーバーが http://localhost:8080/ で実行されています。")
+		fmt.Println("Server running at http://localhost:8080/")
 		if err := http.ListenAndServe(":8080", nil); err != nil {
-			log.Fatalf("サーバーの起動に失敗しました: %v", err)
+			log.Fatalf("Failed to start server: %v", err)
 		}
 	}()
 
@@ -401,7 +401,7 @@ func openBrowser(url string) {
 
 	err := exec.Command(cmd, args...).Start()
 	if err != nil {
-		log.Printf("ブラウザを開くのに失敗しました: %v", err)
+		log.Printf("Failed to open browser: %v", err)
 	}
 }
 
@@ -710,6 +710,34 @@ const htmlTemplate = `
                 padding: 10px;
             }
         }
+        /* Toast Notification Styles */
+        #toast {
+            visibility: hidden;
+            min-width: 250px;
+            background-color: #555;
+            color: #fff;
+            text-align: center;
+            border-radius: 2px;
+            padding: 16px;
+            position: fixed;
+            z-index: 1002;
+            left: 50%;
+            bottom: 30px;
+            transform: translateX(-50%);
+            font-size: 17px;
+        }
+        #toast.show {
+            visibility: visible;
+            animation: fadein 0.5s, fadeout 0.5s 2.5s;
+        }
+        @keyframes fadein {
+            from {bottom: 0; opacity: 0;}
+            to {bottom: 30px; opacity: 1;}
+        }
+        @keyframes fadeout {
+            from {bottom: 30px; opacity: 1;}
+            to {bottom: 0; opacity: 0;}
+        }
     </style>
 </head>
 <body>
@@ -956,6 +984,8 @@ const htmlTemplate = `
         </div>
     </div>
 
+    <div id="toast"></div>
+
     <script>
         const themeToggleBtn = document.getElementById('theme-toggle');
         const currentTheme = localStorage.getItem('theme') ? localStorage.getItem('theme') : null;
@@ -980,6 +1010,7 @@ const htmlTemplate = `
                 themeToggleBtn.textContent = '🌙';
             }
             localStorage.setItem('theme', theme);
+            showToast(theme === 'dark' ? 'Dark mode enabled' : 'Light mode enabled');
         });
 
         const languageToggleBtn = document.getElementById('language-toggle');
@@ -995,6 +1026,7 @@ const htmlTemplate = `
             const newLanguage = localStorage.getItem('language') === 'en' ? 'jp' : 'en';
             switchLanguage(newLanguage);
             localStorage.setItem('language', newLanguage);
+            showToast(newLanguage === 'jp' ? '言語が日本語に切り替わりました' : 'Language switched to English');
         });
 
         function switchLanguage(lang) {
@@ -1179,6 +1211,14 @@ const htmlTemplate = `
         bgColorPicker.addEventListener('input', calculateContrast);
 
         calculateContrast();
+
+        // Toast Notification Function
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = "show";
+            setTimeout(() => { toast.className = toast.className.replace("show", ""); }, 3000);
+        }
     </script>
 </body>
 </html>
